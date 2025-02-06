@@ -1,19 +1,20 @@
-'#include <stdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <pthread.h>
+#include <winsock2.h>
+#include <windows.h>
 #include <sqlite3.h>
 
 #define PORT 8080
 #define MAX_CLIENTS 5
 #define DB_POOL_SIZE 3
 
-pthread_mutex_t db_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Mutex for database access
+CRITICAL_SECTION db_mutex; // Use CRITICAL_SECTION for Windows
+
 sqlite3 *db_pool[DB_POOL_SIZE];
 
-// Function to initialize the database connection pool
+// Initialize the database connection pool
 void init_db_pool() {
     for (int i = 0; i < DB_POOL_SIZE; i++) {
         if (sqlite3_open("database.db", &db_pool[i]) != SQLITE_OK) {
@@ -23,86 +24,120 @@ void init_db_pool() {
     }
 }
 
-// Function to close database connections
+// Close database connections
 void close_db_pool() {
     for (int i = 0; i < DB_POOL_SIZE; i++) {
         sqlite3_close(db_pool[i]);
     }
 }
 
-// Function to get a database connection from the pool
+// Get a database connection from the pool
 sqlite3 *get_db_connection() {
     static int index = 0;
     sqlite3 *db;
-    pthread_mutex_lock(&db_mutex);
+
+    EnterCriticalSection(&db_mutex); // Lock
     db = db_pool[index];
     index = (index + 1) % DB_POOL_SIZE;
-    pthread_mutex_unlock(&db_mutex);
+    LeaveCriticalSection(&db_mutex);  // Unlock
+
     return db;
 }
 
-// Function to handle client requests
-void *handle_client(void *arg) {
+// Handle client requests
+DWORD WINAPI handle_client(LPVOID arg) { // Correct thread function signature
     int client_socket = *(int *)arg;
     char buffer[1024];
-    int bytes_read;
+    int bytes_received;
 
-    bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
-    if (bytes_read > 0) {
-        buffer[bytes_read] = '\0';
+    bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+    if (bytes_received > 0) {
+        buffer[bytes_received] = '\0';
         printf("Received: %s\n", buffer);
-        write(client_socket, "Message received", 16);
+        send(client_socket, "Message received", 16, 0);
+    } else if (bytes_received == SOCKET_ERROR) {
+        perror("recv failed");
     }
 
-    close(client_socket);
+
+    closesocket(client_socket);
     free(arg);
-    pthread_exit(NULL);
+    return 0; // Correct return for thread function
 }
 
 int main() {
     int server_socket, *client_socket;
     struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    pthread_t thread_id;
+    int client_len = sizeof(client_addr); // Correct type for client_len
 
-    // Initialize the database pool
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        printf("WSAStartup failed with error %d\n", WSAGetLastError());
+        return 1;
+    }
+
+    InitializeCriticalSection(&db_mutex); // Initialize the mutex
+
     init_db_pool();
 
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
+    if (server_socket == INVALID_SOCKET) { // Check for INVALID_SOCKET
         perror("Socket creation failed");
-        exit(1);
+        WSACleanup();
+        return 1;
     }
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) { // Check for SOCKET_ERROR
         perror("Binding failed");
-        exit(1);
+        closesocket(server_socket); // Close socket before cleanup
+        WSACleanup();
+        return 1;
     }
 
-    if (listen(server_socket, MAX_CLIENTS) == -1) {
+    if (listen(server_socket, MAX_CLIENTS) == SOCKET_ERROR) { // Check for SOCKET_ERROR
         perror("Listening failed");
-        exit(1);
+        closesocket(server_socket);
+        WSACleanup();
+        return 1;
     }
 
     printf("Server listening on port %d\n", PORT);
 
     while (1) {
         client_socket = malloc(sizeof(int));
+        if (client_socket == NULL) {
+            perror("malloc failed");
+            continue; // Or exit, depending on how you want to handle this.
+        }
+
         *client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
-        if (*client_socket == -1) {
+        if (*client_socket == INVALID_SOCKET) { // Correct check for accept failure
             perror("Accept failed");
             free(client_socket);
             continue;
         }
-        pthread_create(&thread_id, NULL, handle_client, client_socket);
-        pthread_detach(thread_id);
+
+        HANDLE thread_handle;
+        DWORD thread_id;
+
+        thread_handle = CreateThread(NULL, 0, handle_client, client_socket, 0, &thread_id); // Use CreateThread
+        if (thread_handle == NULL) {
+            perror("Thread creation failed");
+            closesocket(*client_socket);
+            free(client_socket);
+        } else {
+            CloseHandle(thread_handle); // Close the thread handle if you don't need it later
+        }
+
     }
 
     close_db_pool();
-    close(server_socket);
+    closesocket(server_socket);
+    WSACleanup();
+    DeleteCriticalSection(&db_mutex); // Delete the critical section
     return 0;
-}' 
+}
