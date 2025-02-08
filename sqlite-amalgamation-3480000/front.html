@@ -1,46 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Server Client</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background-color: #f4f4f4;
-        }
-        .container {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
-        textarea {
-            width: 100%;
-            height: 150px;
-            margin-bottom: 10px;
-        }
-        button {
-            width: 100%;
-            padding: 10px;
-            background: #28a745;
-            color: white;
-            border: none;
-            cursor: pointer;
-            border-radius: 5px;
-        }
-        #response {
-            margin-top: 10px;
-            padding: 10px;
-            background: #e9ecef;
-            border-radius: 5px;
-        }
-    </style>
-</head>
+    </head>
 <body>
     <div class="container">
         <h2>Connect to Server</h2>
@@ -52,17 +13,26 @@
     <script>
         function sendMessage() {
             const message = document.getElementById("message").value;
+
             fetch("http://localhost:8080", {
                 method: "POST",
-                headers: { "Content-Type": "text/plain" },
+                headers: {
+                    "Content-Type": "text/plain"  // Important: Correct Content-Type
+                },
                 body: message
             })
-            .then(response => response.text())
+            .then(response => {
+                if (!response.ok) { // Check for HTTP errors (4xx or 5xx)
+                    throw new Error(`HTTP error ${response.status}`); // Throw error to be caught
+                }
+                return response.text(); // If response is ok, parse the body as text
+            })
             .then(data => {
                 document.getElementById("response").innerText = "Server Response: " + data;
             })
             .catch(error => {
-                document.getElementById("response").innerText = "Error connecting to server";
+                document.getElementById("response").innerText = "Error: " + error.message; // Display a more specific error
+                console.error("Fetch Error:", error); // Log the error to the console for debugging
             });
         }
     </script>
